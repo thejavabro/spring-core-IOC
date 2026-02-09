@@ -1,0 +1,299 @@
+Good. With these new constraints, here is the fresh, corrected, production-grade design and code for Step 1 only
+(loading & parsing validation JSONs).
+No algorithm yet.
+
+I am incorporating all updates you gave:
+
+
+---
+
+✅ Final constraints (locked)
+
+1. Top-level DTO: DcdsPackageDto
+
+
+2. DTOs come from an external Maven dependency
+
+
+3. Six validation JSONs:
+
+Business Rule → INSERT
+
+Business Rule → UPDATE
+
+Logical Rule → INSERT
+
+Logical Rule → UPDATE
+
+Technical Rule → INSERT
+
+Technical Rule → UPDATE
+
+
+
+4. Static JSON today → API tomorrow
+
+
+5. Spring Boot, production-grade
+
+
+
+
+---
+
+1. Updated directory structure (corrected)
+
+src/main/java
+└── com.yourcompany.dqrules
+    ├── Application.java
+
+    ├── validation
+    │   ├── source               // where schema comes from
+    │   │   ├── ValidationSchemaSource.java
+    │   │   ├── ClasspathSchemaSource.java
+    │   │   └── ApiSchemaSource.java
+    │   │
+    │   ├── loader               // parse JSON → DTO
+    │   │   └── ValidationSchemaLoader.java
+    │   │
+    │   ├── registry             // holds all 6 schemas
+    │   │   └── ValidationSchemaRegistry.java
+    │   │
+    │   └── engine               // (later) validation logic
+    │       └── ValidationEngine.java
+
+📌 No DTO packages here
+📌 DTOs are imported from the dependency
+
+
+---
+
+2. Where the six JSON files live (static phase)
+
+src/main/resources/validation
+├── business-rule-insert.json
+├── business-rule-update.json
+├── logical-rule-insert.json
+├── logical-rule-update.json
+├── technical-rule-insert.json
+└── technical-rule-update.json
+
+These file names are intentionally explicit.
+
+
+---
+
+3. Context enums (very important)
+
+These define what schema to load.
+
+public enum RuleType {
+    BUSINESS,
+    LOGICAL,
+    TECHNICAL
+}
+
+public enum ActionType {
+    INSERT,
+    UPDATE
+}
+
+
+---
+
+4. SchemaSource abstraction (future-proof)
+
+ValidationSchemaSource
+
+public interface ValidationSchemaSource {
+    InputStream load(RuleType ruleType, ActionType actionType);
+}
+
+
+---
+
+Static JSON implementation (today)
+
+@Component
+@Profile("!api-schema")
+public class ClasspathSchemaSource implements ValidationSchemaSource {
+
+    @Override
+    public InputStream load(RuleType ruleType, ActionType actionType) {
+        String fileName = String.format(
+                "validation/%s-rule-%s.json",
+                ruleType.name().toLowerCase(),
+                actionType.name().toLowerCase()
+        );
+
+        try {
+            return new ClassPathResource(fileName).getInputStream();
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load schema: " + fileName, e);
+        }
+    }
+}
+
+✔ Zero branching
+✔ Easy to extend
+✔ Same logic will work for API
+
+
+---
+
+API implementation (future)
+
+@Component
+@Profile("api-schema")
+public class ApiSchemaSource implements ValidationSchemaSource {
+
+    private final RestTemplate restTemplate;
+
+    public ApiSchemaSource(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
+
+    @Override
+    public InputStream load(RuleType ruleType, ActionType actionType) {
+        String url = String.format(
+                "https://schema-service/schemas/%s/%s",
+                ruleType.name(),
+                actionType.name()
+        );
+
+        byte[] json = restTemplate.getForObject(url, byte[].class);
+        return new ByteArrayInputStream(json);
+    }
+}
+
+📌 No validation code changes later
+
+
+---
+
+5. Loader: JSON → DcdsPackageDto
+
+@Component
+public class ValidationSchemaLoader {
+
+    private final ObjectMapper objectMapper;
+    private final ValidationSchemaSource schemaSource;
+
+    public ValidationSchemaLoader(
+            ObjectMapper objectMapper,
+            ValidationSchemaSource schemaSource) {
+        this.objectMapper = objectMapper;
+        this.schemaSource = schemaSource;
+    }
+
+    public DcdsPackageDto load(RuleType ruleType, ActionType actionType) {
+        try (InputStream is = schemaSource.load(ruleType, actionType)) {
+            return objectMapper.readValue(is, DcdsPackageDto.class);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                    "Failed to parse validation schema for "
+                            + ruleType + " / " + actionType, e);
+        }
+    }
+}
+
+✔ Uses DTOs from dependency
+✔ Clean boundary
+✔ Fail-fast if schema is invalid
+
+
+---
+
+6. Registry: hold all 6 schemas in memory
+
+This is critical for performance and clarity.
+
+@Component
+public class ValidationSchemaRegistry {
+
+    private final ValidationSchemaLoader loader;
+
+    private final Map<RuleType, Map<ActionType, DcdsPackageDto>> schemas =
+            new EnumMap<>(RuleType.class);
+
+    public ValidationSchemaRegistry(ValidationSchemaLoader loader) {
+        this.loader = loader;
+    }
+
+    @PostConstruct
+    public void init() {
+        for (RuleType ruleType : RuleType.values()) {
+            Map<ActionType, DcdsPackageDto> byAction =
+                    new EnumMap<>(ActionType.class);
+
+            for (ActionType actionType : ActionType.values()) {
+                byAction.put(actionType, loader.load(ruleType, actionType));
+            }
+            schemas.put(ruleType, byAction);
+        }
+    }
+
+    public DcdsPackageDto getSchema(RuleType ruleType, ActionType actionType) {
+        return schemas.get(ruleType).get(actionType);
+    }
+}
+
+Now you can do:
+
+DcdsPackageDto schema =
+    registry.getSchema(RuleType.BUSINESS, ActionType.INSERT);
+
+
+---
+
+7. Why this design is correct (important)
+
+✔ Handles 6 schemas cleanly
+✔ Static JSON → API with zero refactor
+✔ DTOs stay external
+✔ Validation engine is fully decoupled
+✔ Easy to add:
+
+new rule types
+
+new actions
+
+schema refresh later
+
+
+
+---
+
+8. What we will do next (Step 2)
+
+Next iteration we will not touch loaders again.
+
+We will:
+
+1. Traverse DcdsPackageDto
+
+
+2. Extract:
+
+MEMBER-RECORDs
+
+LOGICAL-NAME
+
+data-type-info
+
+
+
+3. Build an internal validation model
+
+
+4. Implement the validation algorithm
+
+
+
+When ready, say:
+
+> “Let’s implement the validation algorithm.”
+
+
+
+You are building this the right way.
