@@ -1,0 +1,526 @@
+Good catch on the mistake — and yes, the correction is now very clear. I’ll first state the corrected understanding, then give you the updated directory structure and code skeleton, aligned with everything you’ve clarified.
+
+I will not jump into the algorithm yet, exactly as you asked. This is only the fixed foundation.
+
+
+---
+
+1️⃣ Corrected understanding (important)
+
+❌ Earlier mistake (now fixed)
+
+Treating Package DTO as the root of the validation JSON ❌
+
+
+✅ Correct structure (final, correct)
+
+Root of validation JSON →
+
+{
+  "entities": [ ... ]
+}
+
+Inside entities[]:
+
+1. Entity #1 → PACKAGE (DCDS package)
+
+
+2. Entity #2 → CLASS (Business / Logical / Technical rule)
+
+
+3. Entity #3+ → MEMBER entities (each field definition)
+
+
+
+
+So:
+
+Entities are peers
+
+Entity type + metadataRecordType defines role
+
+Dimensions are inside each entity, not global
+
+
+This aligns perfectly with the DcdsEntityDto you shared.
+
+
+---
+
+2️⃣ What the validation JSON really represents
+
+Each entity contains:
+
+masterRef
+
+originData
+
+masterData
+
+dimensions[]  ✅ THIS is where validation rules live
+
+attributes[]
+
+relations[]
+
+
+And inside dimensions[]:
+
+dimensionType = data-type-info → validation rules
+
+dimensionType = name → DISPLAY-NAME, LOGICAL-NAME
+
+dataType, fieldFormat, fieldIsNullable, etc.
+
+
+So validation logic must be built entity-by-entity, not package-first.
+
+
+---
+
+3️⃣ Updated directory structure (finalized & correct)
+
+This structure:
+
+Supports 6 schemas
+
+Supports future API replacement
+
+Uses DTOs via dependency
+
+Keeps validation logic independent
+
+
+src/main/java
+└── com.yourorg.dq.validation
+    ├── config
+    │   └── ValidationSchemaConfig.java
+    │
+    ├── loader
+    │   ├── ValidationSchemaLoader.java
+    │   ├── StaticJsonSchemaLoader.java
+    │   └── ApiSchemaLoader.java   (future)
+    │
+    ├── model
+    │   ├── ValidationSchema.java
+    │   ├── EntityValidationModel.java
+    │   ├── FieldValidationRule.java
+    │   └── RuleScope.java
+    │
+    ├── registry
+    │   └── ValidationSchemaRegistry.java
+    │
+    ├── service
+    │   └── ValidationEngine.java
+    │
+    └── util
+        └── EntityClassifier.java
+
+src/main/resources
+└── validation
+    ├── business-rule-insert.json
+    ├── business-rule-update.json
+    ├── logical-rule-insert.json
+    ├── logical-rule-update.json
+    ├── technical-rule-insert.json
+    └── technical-rule-update.json
+
+
+---
+
+4️⃣ Root loader code (updated)
+
+ValidationSchemaLoader (strategy)
+
+public interface ValidationSchemaLoader {
+    ValidationSchema load(RuleScope scope);
+}
+
+
+---
+
+StaticJsonSchemaLoader (CURRENT)
+
+@Component
+public class StaticJsonSchemaLoader implements ValidationSchemaLoader {
+
+    private final ObjectMapper objectMapper;
+
+    public StaticJsonSchemaLoader(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    @Override
+    public ValidationSchema load(RuleScope scope) {
+        String path = "/validation/" + scope.fileName();
+
+        try (InputStream is = getClass().getResourceAsStream(path)) {
+            DcdsEntityContainerDto container =
+                    objectMapper.readValue(is, DcdsEntityContainerDto.class);
+
+            return ValidationSchema.from(container.entities());
+
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to load schema: " + scope, e);
+        }
+    }
+}
+
+> Note: DcdsEntityContainerDto is the true root DTO:
+
+
+
+public record DcdsEntityContainerDto(
+        List<@Valid DcdsEntityDto> entities
+) {}
+
+
+---
+
+5️⃣ Registry (loaded once at startup)
+
+@Component
+public class ValidationSchemaRegistry {
+
+    private final Map<RuleScope, ValidationSchema> schemas = new EnumMap<>(RuleScope.class);
+
+    public ValidationSchemaRegistry(ValidationSchemaLoader loader) {
+        for (RuleScope scope : RuleScope.values()) {
+            schemas.put(scope, loader.load(scope));
+        }
+    }
+
+    public ValidationSchema get(RuleScope scope) {
+        return schemas.get(scope);
+    }
+}
+
+📌 Loaded at application startup, cached in memory.
+
+
+---
+
+6️⃣ Internal model (key fix)
+
+ValidationSchema
+
+public class ValidationSchema {
+
+    private final Map<String, EntityValidationModel> entitiesByLogicalName;
+
+    private ValidationSchema(Map<String, EntityValidationModel> map) {
+        this.entitiesByLogicalName = map;
+    }
+
+    public static ValidationSchema from(List<DcdsEntityDto> entities) {
+        Map<String, EntityValidationModel> map = new HashMap<>();
+
+        for (DcdsEntityDto entity : entities) {
+            EntityValidationModel model = EntityValidationModel.from(entity);
+            map.put(model.logicalName(), model);
+        }
+
+        return new ValidationSchema(map);
+    }
+}
+
+
+---
+
+EntityValidationModel (corrected)
+
+public record EntityValidationModel(
+        String logicalName,
+        Map<String, FieldValidationRule> fields
+) {
+
+    public static EntityValidationModel from(DcdsEntityDto entity) {
+        String logicalName = EntityClassifier.logicalName(entity);
+
+        Map<String, FieldValidationRule> fields =
+                entity.dimensions().stream()
+                      .filter(d -> d instanceof DcdsDataTypeInfoDto)
+                      .map(FieldValidationRule::from)
+                      .collect(Collectors.toMap(
+                          FieldValidationRule::fieldName,
+                          Function.identity()
+                      ));
+
+        return new EntityValidationModel(logicalName, fields);
+    }
+}
+
+
+---
+
+7️⃣ Why this is now correct
+
+✅ Root is entities[]
+✅ Dimensions interpreted per entity
+✅ MEMBER entities drive request-field validation
+✅ JAVA-MAP handled as key-value paramName/paramValue
+✅ Supports 6 schemas cleanly
+✅ API replacement is trivial
+
+
+---
+
+8️⃣ Logical next step (recommended)
+
+Next step (only one):
+
+👉 Build FieldValidationRule correctly from dimensions[]
+This is where:
+
+mandatory vs optional
+
+enum validation
+
+JAVA-MAP param name validation
+
+
+will be implemented.
+
+Say the word, and we’ll do only that, cleanly and slowly.
+
+
+
+
+
+Good. We proceed one step only, as agreed.
+
+Step 1: Build the internal validation rule model correctly
+
+(derived from dimensions[] of a MEMBER entity)
+
+I will not touch the validation algorithm yet.
+This step is only about representing what the schema says, correctly and loss-free.
+
+
+---
+
+1️⃣ What a MEMBER entity’s dimensions[] actually mean (correct model)
+
+From your screenshots, every MEMBER entity has a dimensions[] array that always follows this pattern:
+
+A. Exactly one data-type-info dimension
+
+This defines:
+
+data type (STRING, LONG, JAVA-MAP)
+
+nullability
+
+enum / format rules
+
+list vs scalar
+
+
+Example:
+
+{
+  "dimensionType": "data-type-info",
+  "dataType": "STRING",
+  "fieldFormat": "enum:INSERT|UPDATE",
+  "fieldData": {
+    "fieldIsNullable": false
+  }
+}
+
+B. One or more name dimensions
+
+These define identity, not rules:
+
+{
+  "dimensionType": "name",
+  "name": "LOGICAL-NAME",
+  "value": "actionCode"
+}
+
+👉 LOGICAL-NAME is the request JSON key
+👉 DISPLAY-NAME is only informational
+
+
+---
+
+2️⃣ Internal model we need (not DTO, not schema JSON)
+
+We need a pure validation model, independent of:
+
+Jackson
+
+DTOs
+
+JSON shape
+
+
+This model should answer questions like:
+
+Is this field mandatory?
+
+What values are allowed?
+
+Is this a JAVA-MAP parameter set?
+
+What keys are allowed inside that map?
+
+
+
+---
+
+3️⃣ Final internal model (corrected)
+
+FieldValidationRule
+
+public final class FieldValidationRule {
+
+    private final String logicalName;          // request JSON key
+    private final DataType dataType;            // STRING, LONG, JAVA_MAP
+    private final boolean nullable;
+    private final Set<String> allowedValues;    // enum values, empty if none
+    private final boolean list;
+
+    private FieldValidationRule(
+            String logicalName,
+            DataType dataType,
+            boolean nullable,
+            boolean list,
+            Set<String> allowedValues
+    ) {
+        this.logicalName = logicalName;
+        this.dataType = dataType;
+        this.nullable = nullable;
+        this.list = list;
+        this.allowedValues = allowedValues;
+    }
+
+    // getters only (immutable)
+}
+
+
+---
+
+DataType enum
+
+public enum DataType {
+    STRING,
+    LONG,
+    JAVA_MAP
+}
+
+
+---
+
+4️⃣ Correct extraction logic (this is where earlier confusion happened)
+
+Source of truth mapping
+
+Validation JSON location	Meaning
+
+dimensionType = name + LOGICAL-NAME	Request JSON key
+dimensionType = data-type-info.dataType	Field data type
+fieldData.fieldIsNullable	Mandatory vs optional
+fieldFormat = enum:...	Allowed values
+fieldIsList	Array vs scalar
+
+
+
+---
+
+5️⃣ Building FieldValidationRule from a MEMBER entity
+
+public static FieldValidationRule fromMemberEntity(DcdsEntityDto entity) {
+
+    // 1. Extract LOGICAL-NAME
+    String logicalName = entity.dimensions().stream()
+        .filter(d -> d instanceof DcdsNameDto)
+        .map(d -> (DcdsNameDto) d)
+        .filter(d -> "LOGICAL-NAME".equals(d.name()))
+        .map(DcdsNameDto::value)
+        .findFirst()
+        .orElseThrow(() ->
+            new IllegalStateException("Missing LOGICAL-NAME for entity " + entity)
+        );
+
+    // 2. Extract data-type-info
+    DcdsDataTypeInfoDto typeInfo = entity.dimensions().stream()
+        .filter(d -> d instanceof DcdsDataTypeInfoDto)
+        .map(d -> (DcdsDataTypeInfoDto) d)
+        .findFirst()
+        .orElseThrow(() ->
+            new IllegalStateException("Missing data-type-info for " + logicalName)
+        );
+
+    DataType dataType = switch (typeInfo.dataType()) {
+        case "STRING" -> DataType.STRING;
+        case "LONG" -> DataType.LONG;
+        case "JAVA-MAP" -> DataType.JAVA_MAP;
+        default -> throw new IllegalStateException("Unsupported type: " + typeInfo.dataType());
+    };
+
+    boolean nullable = typeInfo.fieldData() != null
+            && Boolean.TRUE.equals(typeInfo.fieldData().fieldIsNullable());
+
+    boolean list = Boolean.TRUE.equals(typeInfo.fieldIsList());
+
+    Set<String> allowedValues = parseEnum(typeInfo.fieldFormat());
+
+    return new FieldValidationRule(
+        logicalName,
+        dataType,
+        nullable,
+        list,
+        allowedValues
+    );
+}
+
+
+---
+
+Enum parsing helper
+
+private static Set<String> parseEnum(String fieldFormat) {
+    if (fieldFormat == null || !fieldFormat.startsWith("enum:")) {
+        return Set.of();
+    }
+
+    return Arrays.stream(fieldFormat.substring(5).split("[|,]"))
+            .map(String::trim)
+            .collect(Collectors.toSet());
+}
+
+
+---
+
+6️⃣ Why this fixes the mistake permanently
+
+✅ Root = entities[]
+✅ MEMBER entities → request fields
+✅ dimensions[] interpreted structurally, not positionally
+✅ JAVA-MAP treated as field-level type, not entity-level
+✅ No coupling to package/class entities
+✅ Future API schema will work unchanged
+
+
+---
+
+7️⃣ What we have NOT done yet (intentionally)
+
+❌ No request validation
+❌ No recursion
+❌ No error reporting
+❌ No business logic
+
+We now have a correct internal representation of rules.
+
+
+---
+
+Next step (choose one)
+
+1️⃣ Validate mandatory vs optional
+2️⃣ Validate enum values (STRING)
+3️⃣ Validate JAVA-MAP paramName / paramValue pairs
+4️⃣ Validate duplicate / unknown fields
+
+Tell me one number only.
