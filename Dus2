@@ -1,0 +1,308 @@
+Good question. I’ll now give you the corrected code and structure up to this point, aligned with the fixed understanding:
+
+✅ Root is entities[]
+
+✅ Package / Class / Member are just different entities
+
+✅ JAVA-MAP = set of allowed DCMR controlled parameters
+
+✅ DCMR controlled parameters live in entity.dimensions[] of request
+
+✅ We stop at “internal validation model + loading”, not full algorithm yet
+
+
+I will not jump ahead into validation logic. This is only “code until now”.
+
+
+---
+
+1️⃣ Correct High-Level Architecture (Updated)
+
+validation/
+├── config/
+│   └── ValidationSchemaConfig.java
+│
+├── loader/
+│   ├── ValidationSchemaLoader.java
+│   └── ValidationSchemaSource.java
+│
+├── model/
+│   ├── schema/                <-- INTERNAL MODEL (not DTOs)
+│   │   ├── ValidationSchema.java
+│   │   ├── EntitySchema.java
+│   │   ├── MemberSchema.java
+│   │   ├── DimensionSchema.java
+│   │   └── DcmrParamSchema.java
+│   │
+│   └── runtime/
+│       └── RequestContext.java
+│
+├── parser/
+│   └── ValidationSchemaParser.java
+│
+└── README.md
+
+⚠️ Important
+
+DTOs from the other team are NOT copied
+
+They come from the dependency (as you said)
+
+We convert DTOs → internal model
+
+
+
+---
+
+2️⃣ Where the validation JSON lives (for now)
+
+src/main/resources/validation/
+├── business-rule-insert.json
+├── business-rule-update.json
+├── logical-rule-insert.json
+├── logical-rule-update.json
+├── technical-rule-insert.json
+└── technical-rule-update.json
+
+Later → replaced by API call (design already supports that).
+
+
+---
+
+3️⃣ Internal Model (THIS is the most important correction)
+
+3.1 ValidationSchema (root)
+
+public record ValidationSchema(
+        List<EntitySchema> entities
+) {}
+
+✔ Root is entities[], not package.
+
+
+---
+
+3.2 EntitySchema
+
+public record EntitySchema(
+        String entityType,              // PACKAGE, CLASS, MEMBER
+        String metadataRecordType,       // PACKAGE-RECORD, CLASS-RECORD, MEMBER-RECORD
+        List<MemberSchema> members
+) {}
+
+Package entity → mostly ignored
+
+Class entity → tells rule type (business / logical / technical)
+
+Member entities → actual fields
+
+
+
+---
+
+3.3 MemberSchema (FIELD definition)
+
+public record MemberSchema(
+        String logicalName,
+        DimensionSchema dataTypeInfo,
+        boolean mandatory,
+        DcmrParamSchema dcmrParamSchema   // only for JAVA-MAP
+) {}
+
+✔ Each MEMBER-RECORD becomes one MemberSchema
+
+
+---
+
+3.4 DimensionSchema (generic)
+
+public record DimensionSchema(
+        String dataType,          // STRING, LONG, JAVA-MAP
+        String fieldFormat,       // enum:INSERT/UPDATE, regex, JSON, etc
+        boolean nullable
+) {}
+
+
+---
+
+3.5 DcmrParamSchema (THIS is the key part)
+
+public record DcmrParamSchema(
+        String paramName,                 // LOGICAL-NAME from validation JSON
+        DimensionSchema valueConstraints // constraints on paramValue
+) {}
+
+✔ One JAVA-MAP does NOT mean Map
+✔ It means one allowed DCMR paramName
+
+Multiple JAVA-MAP members ⇒ multiple allowed parameters.
+
+
+---
+
+4️⃣ Schema Loader (static JSON → internal model)
+
+4.1 ValidationSchemaSource
+
+public interface ValidationSchemaSource {
+    InputStream load(String ruleType, String action);
+}
+
+
+---
+
+4.2 File-based implementation (current)
+
+@Component
+public class ClasspathValidationSchemaSource implements ValidationSchemaSource {
+
+    @Override
+    public InputStream load(String ruleType, String action) {
+        String path = "validation/%s-rule-%s.json"
+                .formatted(ruleType, action);
+        return new ClassPathResource(path).getInputStream();
+    }
+}
+
+
+---
+
+5️⃣ Schema Loader (DTO → internal model)
+
+@Component
+public class ValidationSchemaLoader {
+
+    private final ObjectMapper objectMapper;
+    private final ValidationSchemaParser parser;
+    private final ValidationSchemaSource source;
+
+    public ValidationSchemaLoader(
+            ObjectMapper objectMapper,
+            ValidationSchemaParser parser,
+            ValidationSchemaSource source
+    ) {
+        this.objectMapper = objectMapper;
+        this.parser = parser;
+        this.source = source;
+    }
+
+    public ValidationSchema load(String ruleType, String action) {
+        try (InputStream is = source.load(ruleType, action)) {
+            DcdsRootDto dto = objectMapper.readValue(is, DcdsRootDto.class);
+            return parser.parse(dto);
+        }
+    }
+}
+
+⚠️ DcdsRootDto = DTO from dependency
+✔ Root DTO contains entities[]
+
+
+---
+
+6️⃣ ValidationSchemaParser (MOST IMPORTANT FIX)
+
+@Component
+public class ValidationSchemaParser {
+
+    public ValidationSchema parse(DcdsRootDto root) {
+
+        List<EntitySchema> entities =
+                root.entities().stream()
+                    .map(this::parseEntity)
+                    .toList();
+
+        return new ValidationSchema(entities);
+    }
+
+    private EntitySchema parseEntity(DcdsEntityDto entity) {
+
+        String entityType = entity.masterData().entityType();
+        String recordType = entity.masterData().metadataRecordType();
+
+        List<MemberSchema> members =
+                entity.members().stream()
+                    .map(this::parseMember)
+                    .toList();
+
+        return new EntitySchema(entityType, recordType, members);
+    }
+}
+
+
+---
+
+6.1 Member parsing (JAVA-MAP handled correctly)
+
+private MemberSchema parseMember(DcdsEntityDto memberEntity) {
+
+    String logicalName = extractLogicalName(memberEntity.dimensions());
+
+    DimensionSchema dataTypeInfo = extractDataTypeInfo(memberEntity.dimensions());
+
+    boolean mandatory = !dataTypeInfo.nullable();
+
+    DcmrParamSchema dcmrSchema = null;
+
+    if ("JAVA-MAP".equals(dataTypeInfo.dataType())) {
+        dcmrSchema = new DcmrParamSchema(
+                logicalName,
+                dataTypeInfo
+        );
+    }
+
+    return new MemberSchema(
+            logicalName,
+            dataTypeInfo,
+            mandatory,
+            dcmrSchema
+    );
+}
+
+
+---
+
+7️⃣ When is schema loaded?
+
+✔ On demand, not at startup
+✔ Called when request arrives
+✔ Cacheable later (very easy)
+
+
+---
+
+8️⃣ What we have NOT done yet (intentionally)
+
+❌ No request validation logic
+❌ No rule-type branching
+❌ No enum checks
+❌ No missing / extra param detection
+
+That is the next step, not this one.
+
+
+---
+
+9️⃣ Summary (sanity check)
+
+Concern	Status
+
+Root is entities[]	✅ Fixed
+JAVA-MAP meaning	✅ Correct
+DCMR location	✅ entity.dimensions[]
+Multiple schemas	✅ Supported
+Future API call	✅ Designed
+DTO dependency	✅ Used correctly
+
+
+
+---
+
+Next logical step (your call)
+
+1️⃣ Explain validation algorithm in words
+2️⃣ Implement DCMR param validation only
+3️⃣ Add caching + lifecycle
+4️⃣ Walk one real example end-to-end
+
+Tell me which one you want to do next.
