@@ -1,0 +1,40 @@
+{
+  "metadataRecordType": "MEMBER-RECORD",
+  "dimensions": [
+    {
+      "dimensionType": "name",
+      "name": "LOGICAL-NAME",
+      "value": "dcmr.dataQualitySubDimension"
+    },
+    {
+      "dimensionType": "data-type-info",
+      "dataType": "STRING",
+      "fieldData": {
+        "fieldIsNullable": false
+      },
+      "fieldConstraints": {
+        "dependsOn": "dcmr.dataQualityDimension",
+        "allowedValuesByParent": {
+          "Accuracy": [
+            "Conformity",
+            "Reasonableness",
+            "Validity",
+            "Consistency",
+            "Integrity",
+            "Stability",
+            "Uniqueness"
+          ],
+          "Completeness": [
+            "Existence"
+          ],
+          "Timeliness": [
+            "Comprehensiveness",
+            "Freshness",
+            "Latency",
+            "Timing"
+          ]
+        }
+      }
+    }
+  ]
+}
