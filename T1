@@ -1,0 +1,18 @@
+{
+  "metadataRecordType": "MEMBER-RECORD",
+  "dimensions": [
+    {
+      "dimensionType": "name",
+      "name": "LOGICAL-NAME",
+      "value": "dcmr.dataQualityDimension"
+    },
+    {
+      "dimensionType": "data-type-info",
+      "dataType": "STRING",
+      "fieldFormat": "enum:Accuracy,Completeness,Timeliness",
+      "fieldData": {
+        "fieldIsNullable": false
+      }
+    }
+  ]
+}
